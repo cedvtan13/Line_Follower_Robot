@@ -13,6 +13,11 @@ typedef struct {
     int16_t base_speed;
 } PID_Config;
 
+/* --- CONFIGURATION --- */
+// Uncomment the line below to enable aggressive Micromouse-style 
+// Active Pivot Braking (reversing the inner wheel on sharp turns).
+// #define USE_ACTIVE_PIVOT
+
 /**
  * @brief Initialize PID parameters.
  */

@@ -50,6 +50,7 @@ void PID_Compute(PID_Config *pid, int16_t line_position, int16_t *left_speed, in
     int16_t l_out = pid->base_speed - (int16_t)correction;
     int16_t r_out = pid->base_speed + (int16_t)correction;
     
+#ifdef USE_ACTIVE_PIVOT
     // --- ACTIVE PIVOT BRAKING (Micromouse Style) ---
     // If error is extreme (outer sensors), force a negative inner wheel speed 
     // to pivot the robot instantly into the corner.
@@ -60,6 +61,7 @@ void PID_Compute(PID_Config *pid, int16_t line_position, int16_t *left_speed, in
             if (r_out > -700) r_out = -700;
         }
     }
+#endif
 
     // Clamp to limits
     if (l_out > pid->max_speed) l_out = pid->max_speed;
