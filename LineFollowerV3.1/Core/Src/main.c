@@ -38,6 +38,8 @@
 /* USER CODE BEGIN PTD */
 typedef enum {
     STATE_STANDBY,
+    STATE_CALIBRATING,
+    STATE_READY,
     STATE_PRE_START_DELAY,
     STATE_FAN_SPINUP,
     STATE_RUNNING
@@ -47,16 +49,19 @@ typedef enum {
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* --- FINAL TUNED SETTINGS --- */
-#define BASE_SPD        800
+#define BASE_SPD        950
 #define MAX_SPD         1000
-#define FAN_SPD         550
+#define FAN_SPD         600
 
 // Authoritative High-Speed Tuning: Aggressive KP, Strong KD for overshoot prevention
-#define KP              0.100f
+#define KP              0.108f
 #define KI              0.00f
-#define KD              2.50f
+#define KD              2.65f
 
-#define RUN_DURATION_MS 3000
+#define RUN_DURATION_MS 2500
+
+#define CALIB_DURATION_MS 3000
+#define DOUBLE_CLICK_MS   500
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,6 +77,10 @@ uint16_t sensors[8];
 uint32_t run_start_time = 0;
 int8_t last_side = 0;
 RobotState current_state = STATE_STANDBY;
+
+// Button logic
+uint32_t last_btn_press_time = 0;
+uint8_t btn_press_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -160,16 +169,50 @@ int main(void)
 
         switch (current_state) {
             case STATE_STANDBY:
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (HAL_GetTick() / 500) % 2);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (HAL_GetTick() / 1000) % 2); // Slow blink
                 if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14) == GPIO_PIN_SET) {
-                    HAL_Delay(100);
+                    HAL_Delay(200); // Debounce
+                    IR_StartCalibration();
+                    state_start_time = HAL_GetTick();
+                    current_state = STATE_CALIBRATING;
+                }
+                break;
+
+            case STATE_CALIBRATING:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (HAL_GetTick() / 200) % 2); // Fast blink (200ms)
+                IR_UpdateCalibration();
+                if (HAL_GetTick() - state_start_time >= CALIB_DURATION_MS) {
+                    IR_FinishCalibration();
+                    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // LED ON
+                    current_state = STATE_READY;
+                    btn_press_count = 0;
+                }
+                break;
+
+            case STATE_READY:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // LED ON
+                
+                // Double Click Detection
+                if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14) == GPIO_PIN_SET) {
+                    HAL_Delay(100); // Debounce
+                    uint32_t now = HAL_GetTick();
+                    if (now - last_btn_press_time < DOUBLE_CLICK_MS) {
+                        btn_press_count++;
+                    } else {
+                        btn_press_count = 1;
+                    }
+                    last_btn_press_time = now;
+                    while(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14) == GPIO_PIN_SET); // Wait for release
+                }
+
+                if (btn_press_count >= 2) {
                     state_start_time = HAL_GetTick();
                     current_state = STATE_PRE_START_DELAY;
                 }
                 break;
 
             case STATE_PRE_START_DELAY:
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET); // LED OFF
                 if (HAL_GetTick() - state_start_time >= 2000) {
                     Brushless_SetSpeed(FAN_SPD, FAN_SPD);
                     state_start_time = HAL_GetTick();

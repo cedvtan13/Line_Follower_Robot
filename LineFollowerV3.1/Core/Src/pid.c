@@ -15,10 +15,10 @@ void PID_Compute(PID_Config *pid, int16_t line_position, int16_t *left_speed, in
     float error = (float)line_position;
 
     // --- BALANCED HIGH-SPEED FILTER ---
-    // 80% old value, 20% new value. 
-    // Faster reaction to catch 750-speed curves before they overshoot.
+    // 82% old value, 18% new value. 
+    // Slightly more damping to help eliminate the "very very little" overshoot.
     static float filtered_error = 0;
-    filtered_error = (filtered_error * 0.80f) + (error * 0.20f);
+    filtered_error = (filtered_error * 0.82f) + (error * 0.18f);
 
     // Proportional
     float P = pid->Kp * filtered_error;
@@ -30,19 +30,19 @@ void PID_Compute(PID_Config *pid, int16_t line_position, int16_t *left_speed, in
     float correction = P + D;
 
     // --- CENTER STABILIZER ---
-    // Lowered to 1200 to allow aggressive differential force to start sooner.
+    // Softened to 0.85x base speed to reduce "jittery" braking when near center.
     float abs_err = fabsf(filtered_error);
     if (abs_err < 1200.0f) {
-        float max_c = pid->base_speed * 0.90f;
+        float max_c = pid->base_speed * 0.85f;
         if (correction > max_c) correction = max_c;
         if (correction < -max_c) correction = -max_c;
     }
 
     // --- DYNAMIC CORNER SNAP ---
-    // Faster kick (3500) and more power (4x) for extreme speed surviving.
+    // Reduced factor from 4x to 3.5x for smoother high-speed corner entries.
     if (abs_err > 3500.0f) {
-        float factor = 1.0f + ((abs_err - 3500.0f) / 3500.0f) * 3.0f; // Scale from 1x to 4x
-        if (factor > 4.0f) factor = 4.0f;
+        float factor = 1.0f + ((abs_err - 3500.0f) / 3500.0f) * 2.5f; // Scale from 1x to 3.5x
+        if (factor > 3.5f) factor = 3.5f;
         correction *= factor;
     }
     

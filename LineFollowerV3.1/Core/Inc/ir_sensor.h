@@ -34,14 +34,20 @@ void IR_ReadAll(uint16_t *values);
 void IR_SetBrightness(uint8_t brightness);
 
 /**
- * @brief Compatibility API (no-op): calibration is not used.
+ * @brief Reset calibration min/max values.
  */
-void IR_ResetCalibration(void);
+void IR_StartCalibration(void);
 
 /**
- * @brief Compatibility API (no-op): calibration is not used.
+ * @brief Update min/max values based on current readings. 
+ *        Should be called repeatedly during the sweep.
  */
-void IR_Calibrate(void);
+void IR_UpdateCalibration(void);
+
+/**
+ * @brief Calculate thresholds based on collected min/max values.
+ */
+void IR_FinishCalibration(void);
 
 /**
  * @brief Calculate the line position using a weighted average of raw values.

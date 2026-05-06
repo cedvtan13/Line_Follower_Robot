@@ -2,20 +2,44 @@
 #include "tim.h"
 
 /* 
- * SENSOR CALIBRATION (Based on SWO Data)
- * White Floor: ~2200 (Sensor 2 is hot at ~2800)
- * Black Line:  ~3600
+ * DYNAMIC SENSOR CALIBRATION
+ * Stores the minimum (white) and maximum (black) values seen during the sweep.
  */
-static const uint16_t sensor_white_base[8] = { 2130, 2070, 2810, 2390, 2180, 2330, 2560, 1710 };
+static uint16_t sensor_min[8] = { 4095, 4095, 4095, 4095, 4095, 4095, 4095, 4095 };
+static uint16_t sensor_max[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+static uint16_t thresholds[8] = { 3100, 3100, 3100, 3100, 3100, 3100, 3100, 3100 };
 
-#define IR_RAW_DETECT_THRESHOLD 3100U
 #define IR_POSITION_SCALE_NUM   15
 #define IR_POSITION_SCALE_DEN   10
 
 static uint16_t last_raw_values[8];
 
-void IR_ResetCalibration(void) {}
-void IR_Calibrate(void) {}
+void IR_StartCalibration(void) {
+    for (int i = 0; i < 8; i++) {
+        sensor_min[i] = 4095;
+        sensor_max[i] = 0;
+    }
+}
+
+void IR_UpdateCalibration(void) {
+    uint16_t current_vals[8];
+    IR_ReadAll(current_vals);
+    for (int i = 0; i < 8; i++) {
+        if (current_vals[i] < sensor_min[i]) sensor_min[i] = current_vals[i];
+        if (current_vals[i] > sensor_max[i]) sensor_max[i] = current_vals[i];
+    }
+}
+
+void IR_FinishCalibration(void) {
+    for (int i = 0; i < 8; i++) {
+        // If range is too small, fallback to default threshold
+        if (sensor_max[i] - sensor_min[i] > 500) {
+            thresholds[i] = sensor_min[i] + (sensor_max[i] - sensor_min[i]) / 2;
+        } else {
+            thresholds[i] = 3100;
+        }
+    }
+}
 
 void IR_Init(void) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -72,19 +96,19 @@ int16_t IR_GetLinePosition(void) {
     for (uint8_t i = 0; i < 8; i++) {
         uint16_t raw = last_raw_values[i];
         
-        // Subtract white base to get true signal strength
-        int32_t signal = (int32_t)raw - (int32_t)sensor_white_base[i];
+        // Subtract calibrated min (white) to get true signal strength
+        int32_t signal = (int32_t)raw - (int32_t)sensor_min[i];
         if (signal < 0) signal = 0;
         
-        // Only use sensor if it's significantly darker than the floor
-        if (raw > IR_RAW_DETECT_THRESHOLD) {
+        // Only use sensor if it's significantly darker than its calibrated floor
+        if (raw > thresholds[i]) {
             avg += (unsigned long)signal * (i * 1000U);
             sum += signal;
             if (raw > max_val) max_val = raw;
         }
     }
 
-    if (sum == 0 || max_val < IR_RAW_DETECT_THRESHOLD) return -9999;
+    if (sum == 0) return -9999;
 
     int32_t raw_pos = (int32_t)(avg / sum);
     int32_t mapped_pos = raw_pos - 3500;
@@ -97,7 +121,7 @@ int16_t IR_GetLinePosition(void) {
 
 uint8_t IR_IsLineDetected(void) {
     for (int i = 0; i < 8; i++) {
-        if (last_raw_values[i] > IR_RAW_DETECT_THRESHOLD) return 1;
+        if (last_raw_values[i] > thresholds[i]) return 1;
     }
     return 0;
 }
@@ -105,7 +129,7 @@ uint8_t IR_IsLineDetected(void) {
 uint8_t IR_GetActiveCount(void) {
     uint8_t count = 0;
     for (int i = 0; i < 8; i++) {
-        if (last_raw_values[i] > IR_RAW_DETECT_THRESHOLD) count++;
+        if (last_raw_values[i] > thresholds[i]) count++;
     }
     return count;
 }
