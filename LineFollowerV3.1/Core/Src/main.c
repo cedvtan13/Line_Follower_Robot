@@ -56,7 +56,7 @@ typedef enum {
 #define BOOST_SPD       1000
 #define MAX_SPD         1000
 #define FAN_SPD         650 
-#define MAP_BASE_SPD    250
+#define MAP_BASE_SPD    200
 #define MAP_FAN_SPD     0
 #define FAST_FAN_SPD    600
 
