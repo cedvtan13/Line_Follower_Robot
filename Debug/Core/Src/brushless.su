@@ -1,0 +1,3 @@
+../Core/Src/brushless.c:11:13:DShot_PrepareBuffer	104	static
+../Core/Src/brushless.c:46:6:Brushless_Init	16	static
+../Core/Src/brushless.c:62:6:Brushless_SetSpeed	16	static

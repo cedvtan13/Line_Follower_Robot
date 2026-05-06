@@ -1,0 +1,9 @@
+../Core/Src/ir_sensor.c:25:6:IR_ResetCalibration	1
+../Core/Src/ir_sensor.c:29:6:IR_Calibrate	1
+../Core/Src/ir_sensor.c:33:6:IR_Init	1
+../Core/Src/ir_sensor.c:63:6:IR_SelectChannel	2
+../Core/Src/ir_sensor.c:72:10:IR_ReadADC	2
+../Core/Src/ir_sensor.c:79:6:IR_SetBrightness	1
+../Core/Src/ir_sensor.c:88:6:IR_ReadAll	2
+../Core/Src/ir_sensor.c:97:9:IR_GetLinePosition	6
+../Core/Src/ir_sensor.c:126:9:IR_IsLineDetected	3

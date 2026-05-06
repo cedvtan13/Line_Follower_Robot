@@ -46,7 +46,7 @@ void IR_Calibrate(void);
 /**
  * @brief Calculate the line position using a weighted average of raw values.
  *        Uses raw ADC values directly (no calibration).
- * @return Line position from -3500 (far left) to 3500 (far right). 
+ * @return Scaled line position (nominal raw range is -3500 to 3500).
  *         0 is centered. Returns -9999 if no line is detected.
  */
 int16_t IR_GetLinePosition(void);
@@ -56,5 +56,11 @@ int16_t IR_GetLinePosition(void);
  * @return 1 if line detected, 0 if only white background is seen.
  */
 uint8_t IR_IsLineDetected(void);
+
+/**
+ * @brief Count how many sensors currently detect the line.
+ * @return Number of active sensors (0-8).
+ */
+uint8_t IR_GetActiveCount(void);
 
 #endif /* __IR_SENSOR_H */

@@ -7,53 +7,55 @@ void PID_Init(PID_Config *pid, float kp, float ki, float kd, int16_t base_speed,
     pid->Kd = kd;
     pid->base_speed = base_speed;
     pid->max_speed = max_speed;
-    pid->last_error = 0;
     pid->integral = 0;
+    pid->last_error = 0;
 }
 
-void PID_Compute(PID_Config *pid, int16_t current_position, int16_t *left_speed, int16_t *right_speed) {
-    // Target position is 0 (centered on the line)
-    float error = (float)current_position;
+void PID_Compute(PID_Config *pid, int16_t line_position, int16_t *left_speed, int16_t *right_speed) {
+    float error = (float)line_position;
 
-    // Proportional term
-    float P = pid->Kp * error;
+    // --- BALANCED HIGH-SPEED FILTER ---
+    // 80% old value, 20% new value. 
+    // Faster reaction to catch 750-speed curves before they overshoot.
+    static float filtered_error = 0;
+    filtered_error = (filtered_error * 0.80f) + (error * 0.20f);
 
-    // Derivative term
-    float D = pid->Kd * (error - pid->last_error);
-    pid->last_error = error;
+    // Proportional
+    float P = pid->Kp * filtered_error;
 
-    // Integral term
-    pid->integral += error;
-    // Basic clamp for integral
-    if (pid->integral > 1000) pid->integral = 1000;
-    if (pid->integral < -1000) pid->integral = -1000;
-    
-    float I = pid->Ki * pid->integral;
-    
-    float correction = P + I + D;
+    // Derivative (On filtered signal)
+    float D = pid->Kd * (filtered_error - pid->last_error);
+    pid->last_error = filtered_error;
 
-    // Arduino-style motor control (Inverted to match user's REVERSE PID logic):
-    // If correction > 0, slow down LEFT wheel.
-    // If correction < 0, slow down RIGHT wheel.
-    
-    int16_t l_spd, r_spd;
-    
-    if (correction > 0) {
-        r_spd = pid->base_speed;
-        l_spd = pid->base_speed - (int16_t)fabsf(correction);
-    } else {
-        l_spd = pid->base_speed;
-        r_spd = pid->base_speed - (int16_t)fabsf(correction);
+    float correction = P + D;
+
+    // --- CENTER STABILIZER ---
+    // Lowered to 1200 to allow aggressive differential force to start sooner.
+    float abs_err = fabsf(filtered_error);
+    if (abs_err < 1200.0f) {
+        float max_c = pid->base_speed * 0.90f;
+        if (correction > max_c) correction = max_c;
+        if (correction < -max_c) correction = -max_c;
     }
 
-
-    // Clamp speeds to -max_speed to max_speed
-    if (l_spd > pid->max_speed) l_spd = pid->max_speed;
-    if (l_spd < -pid->max_speed) l_spd = -pid->max_speed;
-    if (r_spd > pid->max_speed) r_spd = pid->max_speed;
-    if (r_spd < -pid->max_speed) r_spd = -pid->max_speed;
+    // --- DYNAMIC CORNER SNAP ---
+    // Faster kick (3500) and more power (4x) for extreme speed surviving.
+    if (abs_err > 3500.0f) {
+        float factor = 1.0f + ((abs_err - 3500.0f) / 3500.0f) * 3.0f; // Scale from 1x to 4x
+        if (factor > 4.0f) factor = 4.0f;
+        correction *= factor;
+    }
     
-    *left_speed = l_spd;
-    *right_speed = r_spd;
+    // Differential Steering (Corrected for your verified sensor/motor alignment)
+    int16_t l_out = pid->base_speed - (int16_t)correction;
+    int16_t r_out = pid->base_speed + (int16_t)correction;
+    
+    // Clamp to limits
+    if (l_out > pid->max_speed) l_out = pid->max_speed;
+    if (l_out < -pid->max_speed) l_out = -pid->max_speed;
+    if (r_out > pid->max_speed) r_out = pid->max_speed;
+    if (r_out < -pid->max_speed) r_out = -pid->max_speed;
+    
+    *left_speed = l_out;
+    *right_speed = r_out;
 }
-

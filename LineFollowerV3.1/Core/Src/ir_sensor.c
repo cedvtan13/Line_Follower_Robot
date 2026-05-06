@@ -1,92 +1,62 @@
 #include "ir_sensor.h"
 #include "tim.h"
 
-/* Multiplexer select pins definitions */
-#define MUX_S0_PORT GPIOB
-#define MUX_S0_PIN  GPIO_PIN_2
-#define MUX_S1_PORT GPIOB
-#define MUX_S1_PIN  GPIO_PIN_8
-#define MUX_S2_PORT GPIOB
-#define MUX_S2_PIN  GPIO_PIN_9
+/* 
+ * SENSOR CALIBRATION (Based on SWO Data)
+ * White Floor: ~2200 (Sensor 2 is hot at ~2800)
+ * Black Line:  ~3600
+ */
+static const uint16_t sensor_white_base[8] = { 2130, 2070, 2810, 2390, 2180, 2330, 2560, 1710 };
 
-/* ADC pin definition (PB1 - ADC1_IN9) */
-#define ADC_PORT    GPIOB
-#define ADC_PIN     GPIO_PIN_1
-#define ADC_CHANNEL 9
+#define IR_RAW_DETECT_THRESHOLD 3100U
+#define IR_POSITION_SCALE_NUM   15
+#define IR_POSITION_SCALE_DEN   10
 
-#define IR_RAW_DETECT_THRESHOLD 250U
-
-/* MOSFET Logic: P-Channel (Low = ON, High = OFF) */
-/* When using PWM, 0% duty = ON (Low), 100% duty = OFF (High) */
-
-/* Internal buffer for raw values */
 static uint16_t last_raw_values[8];
 
-void IR_ResetCalibration(void) {
-    // Calibration removed: kept as no-op for API compatibility.
-}
-
-void IR_Calibrate(void) {
-    // Calibration removed: kept as no-op for API compatibility.
-}
+void IR_ResetCalibration(void) {}
+void IR_Calibrate(void) {}
 
 void IR_Init(void) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
-
     __HAL_RCC_GPIOB_CLK_ENABLE();
-
-    /* MUX Control Pins */
-    GPIO_InitStruct.Pin = MUX_S0_PIN | MUX_S1_PIN | MUX_S2_PIN;
+    GPIO_InitStruct.Pin = GPIO_PIN_2 | GPIO_PIN_8 | GPIO_PIN_9;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    /* ADC Pin */
-    GPIO_InitStruct.Pin = ADC_PIN;
+    GPIO_InitStruct.Pin = GPIO_PIN_1;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    /* Start TIM3 for IR PWM */
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-    IR_SetBrightness(255); // Default full brightness
-
+    IR_SetBrightness(255);
     __HAL_RCC_ADC1_CLK_ENABLE();
-
     ADC1->CR1 = 0; 
     ADC1->CR2 = ADC_CR2_ADON; 
-    
     ADC1->SMPR2 |= (7U << 27);
 }
 
 void IR_SelectChannel(uint8_t channel) {
-    HAL_GPIO_WritePin(MUX_S0_PORT, MUX_S0_PIN, (channel & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MUX_S1_PORT, MUX_S1_PIN, (channel & 0x02) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(MUX_S2_PORT, MUX_S2_PIN, (channel & 0x04) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    
-    // Settling delay for MUX and ADC (~20us)
-    for(volatile int i=0; i<1000; i++); 
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, (channel & 0x01) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, (channel & 0x02) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, (channel & 0x04) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    for(volatile int i=0; i<800; i++); 
 }
 
 uint16_t IR_ReadADC(void) {
-    ADC1->SQR3 = ADC_CHANNEL;
+    ADC1->SQR3 = 9;
     ADC1->CR2 |= ADC_CR2_SWSTART;
     while (!(ADC1->SR & ADC_SR_EOC));
     return (uint16_t)ADC1->DR;
 }
 
 void IR_SetBrightness(uint8_t brightness) {
-    // P-Channel MOSFET: Low is ON, High is OFF.
-    // PWM1 mode, Polarity High: 
-    // Pulse = 0 -> Output Low (100% ON)
-    // Pulse = ARR -> Output High (0% ON)
     uint32_t duty = (255 - brightness) * 2399 / 255;
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, duty);
 }
 
 void IR_ReadAll(uint16_t *values) {
-    // Read with LEDs ON (simple mode)
     for (uint8_t i = 0; i < 8; i++) {
         IR_SelectChannel(i);
         values[i] = IR_ReadADC();
@@ -100,32 +70,42 @@ int16_t IR_GetLinePosition(void) {
     uint16_t max_val = 0;
 
     for (uint8_t i = 0; i < 8; i++) {
-        uint16_t raw_val = last_raw_values[i];
-        uint16_t weight = (raw_val > IR_RAW_DETECT_THRESHOLD) ? raw_val : 0;
-
-        avg += (unsigned long)weight * (i * 1000U);
-        sum += weight;
-        if (weight > max_val) max_val = weight;
+        uint16_t raw = last_raw_values[i];
+        
+        // Subtract white base to get true signal strength
+        int32_t signal = (int32_t)raw - (int32_t)sensor_white_base[i];
+        if (signal < 0) signal = 0;
+        
+        // Only use sensor if it's significantly darker than the floor
+        if (raw > IR_RAW_DETECT_THRESHOLD) {
+            avg += (unsigned long)signal * (i * 1000U);
+            sum += signal;
+            if (raw > max_val) max_val = raw;
+        }
     }
 
-    if (sum == 0 || max_val < IR_RAW_DETECT_THRESHOLD) {
-        return -9999;
-    }
+    if (sum == 0 || max_val < IR_RAW_DETECT_THRESHOLD) return -9999;
 
-    // Calculate raw position (0 to 7000)
     int32_t raw_pos = (int32_t)(avg / sum);
+    int32_t mapped_pos = raw_pos - 3500;
+    int32_t scaled_pos = (mapped_pos * IR_POSITION_SCALE_NUM) / IR_POSITION_SCALE_DEN;
     
-    // Map 0...7000 to -3500...3500
-    // 0 is LEFTMOST, 7000 is RIGHTMOST.
-    // -3500 = Line on LEFT, 0 = CENTER, +3500 = Line on RIGHT
-    int16_t mapped_pos = (int16_t)(raw_pos - 3500);
-    
-    return mapped_pos;
+    if (scaled_pos > 7000) scaled_pos = 7000;
+    if (scaled_pos < -7000) scaled_pos = -7000;
+    return (int16_t)scaled_pos;
 }
 
 uint8_t IR_IsLineDetected(void) {
     for (int i = 0; i < 8; i++) {
-        if (last_raw_values[i] > 100) return 1;
+        if (last_raw_values[i] > IR_RAW_DETECT_THRESHOLD) return 1;
     }
     return 0;
+}
+
+uint8_t IR_GetActiveCount(void) {
+    uint8_t count = 0;
+    for (int i = 0; i < 8; i++) {
+        if (last_raw_values[i] > IR_RAW_DETECT_THRESHOLD) count++;
+    }
+    return count;
 }

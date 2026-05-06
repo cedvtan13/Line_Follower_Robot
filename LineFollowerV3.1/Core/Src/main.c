@@ -4,6 +4,16 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -26,48 +36,27 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum {
+    STATE_STANDBY,
+    STATE_PRE_START_DELAY,
+    STATE_FAN_SPINUP,
+    STATE_RUNNING
+} RobotState;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-// --- TUNING PARAMETERS ---
-#define BASE_SPEED        650
-#define MAX_SPEED         1000
-#define DOWNFORCE_SPEED   550   
+/* --- FINAL TUNED SETTINGS --- */
+#define BASE_SPD        800
+#define MAX_SPD         1000
+#define FAN_SPD         550
 
+// Authoritative High-Speed Tuning: Aggressive KP, Strong KD for overshoot prevention
+#define KP              0.100f
+#define KI              0.00f
+#define KD              2.50f
 
-#define PID_KP            2.10f
-#define PID_KI            0.0f
-#define PID_KD            2.60f
-
-#define CORNER_MID_THRESHOLD     1300
-#define CORNER_HARD_THRESHOLD    2000
-#define CORNER_PIVOT_THRESHOLD   3050
-#define CORNER_MID_RATE_THRESHOLD   500
-#define CORNER_HARD_RATE_THRESHOLD  800
-#define CORNER_MID_BASE_SPEED    360
-#define CORNER_HARD_BASE_SPEED   220
-#define CORNER_PIVOT_OUTER_SPEED 560
-#define CORNER_PIVOT_INNER_SPEED 0
-
-#define RECOVERY_SPEED    400
-#define RECOVERY_TURN_HINT_THRESHOLD  700
-#define RECOVERY_ARC_SPEED            320
-#define RECOVERY_PIVOT_OUTER_SPEED    420
-#define RECOVERY_PIVOT_INNER_SPEED      0
-#define RECOVERY_PIVOT_DELAY_MS       120
-#define RECOVERY_TIMEOUT  2000
-
-#define LINE_LOCK_REQUIRED_SAMPLES       4
-#define STARTUP_ACQUIRE_MS             450
-#define STARTUP_ACQUIRE_SPEED          240
-
-#define RUN_DURATION_MS   4600
-
-#define START_DELAY_MS    2000  // Wait before props
-#define SPINUP_DELAY_MS   3000  // Wait for props to stabilize
-// -------------------------
+#define RUN_DURATION_MS 3000
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -78,38 +67,17 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint16_t ir_values[8];
-int16_t line_position = 0;
-int16_t last_line_position = 0;
-int8_t recovery_turn_dir = 0;  // +1 = search right, -1 = search left, 0 = unknown
-uint8_t line_lock_count = 0;
-uint8_t line_locked = 0;
-
-PID_Config line_pid;
-
-// State Machine
-typedef enum {
-    STATE_STANDBY,
-    STATE_DELAY,    // Wait before props
-    STATE_SPINUP,   // Props on, wheels off
-    STATE_RUN       // Everything on
-} RobotState;
-
-RobotState current_state = STATE_STANDBY;
-
-// Timing variables
+PID_Config pid;
+uint16_t sensors[8];
 uint32_t run_start_time = 0;
-uint32_t delay_start_time = 0;
-uint32_t spinup_start_time = 0;
-uint32_t lost_line_start_time = 0;
-
-// Button state variables
-uint32_t last_button_time = 0;
+int8_t last_side = 0;
+RobotState current_state = STATE_STANDBY;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -153,19 +121,16 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  /* 1. Initialize Drivers */
-  IR_Init();
-  Motor_Init();
-  Brushless_Init();
-  
-  /* 2. PID Settings */
-  PID_Init(&line_pid, PID_KP, PID_KI, PID_KD, BASE_SPEED, MAX_SPEED);
+    IR_Init();
+    Motor_Init();
+    Brushless_Init();
+    PID_Init(&pid, KP, KI, KD, BASE_SPD, MAX_SPD);
 
-  /* 3. Initial Stop */
-  Motor_Stop();
-  Brushless_SetSpeed(0, 0);
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET); // LED OFF
+    Motor_Stop();
+    Brushless_SetSpeed(0, 0);
 
+    uint32_t state_start_time = 0;
+    uint32_t last_print = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -175,187 +140,87 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-      // 1. Button Logic (PC14) - single click to start, click again to stop
-      uint8_t btn_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14);
-      static uint8_t last_btn_state = 0;
+        IR_ReadAll(sensors);
+        int16_t pos = IR_GetLinePosition();
+        uint8_t count = IR_GetActiveCount();
 
-      if (btn_state == GPIO_PIN_SET && last_btn_state == 0 && (HAL_GetTick() - last_button_time > 50)) {
-          last_button_time = HAL_GetTick();
-          if (current_state != STATE_STANDBY) {
-              // Any button press during operation stops the system
-              current_state = STATE_STANDBY;
-              line_lock_count = 0;
-              line_locked = 0;
-              recovery_turn_dir = 0;
-              Motor_Stop();
-              Brushless_SetSpeed(0, 0);
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-          } else {
-              line_lock_count = 0;
-              line_locked = 0;
-              recovery_turn_dir = 0;
-              current_state = STATE_DELAY;
-              delay_start_time = HAL_GetTick();
-          }
-      }
-      last_btn_state = btn_state;
+        // Categorize and Print raw values to SWO every 500ms
+        if (HAL_GetTick() - last_print > 500) {
+            const char* zone = "LOST";
+            if (pos != -9999) {
+                int16_t abs_pos = (pos >= 0) ? pos : -pos;
+                if (abs_pos < 500) zone = "CENTER";
+                else if (abs_pos < 2000) zone = (pos > 0) ? "MID-LEFT" : "MID-RIGHT";
+                else if (abs_pos < 4500) zone = (pos > 0) ? "NORM-LEFT" : "NORM-RIGHT";
+                else zone = (pos > 0) ? "HARD-LEFT" : "HARD-RIGHT";
+            }
+            printf("[%s] Pos: %5d | State: %d | Run: 750\r\n", zone, pos, current_state);
+            last_print = HAL_GetTick();
+        }
 
-      // 2. Control Loop
-      if (current_state == STATE_DELAY) {
-          Motor_Stop();
-          Brushless_SetSpeed(0, 0); 
-          if (HAL_GetTick() - delay_start_time >= START_DELAY_MS) {
-              current_state = STATE_SPINUP;
-              spinup_start_time = HAL_GetTick();
-              Brushless_SetSpeed(DOWNFORCE_SPEED, DOWNFORCE_SPEED);
-          }
-          if ((HAL_GetTick() / 200) % 2) HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-          else HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-          
-      } else if (current_state == STATE_SPINUP) {
-          Motor_Stop();
-          Brushless_SetSpeed(DOWNFORCE_SPEED, DOWNFORCE_SPEED);
-          if (HAL_GetTick() - spinup_start_time >= SPINUP_DELAY_MS) {
-              current_state = STATE_RUN;
-              run_start_time = HAL_GetTick();
-              lost_line_start_time = 0;
-              line_lock_count = 0;
-              line_locked = 0;
-              recovery_turn_dir = 0;
-              last_line_position = 0;
-              HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-          }
-          if ((HAL_GetTick() / 50) % 2) HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-          else HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-          
-      } else if (current_state == STATE_RUN) {
-          // Timer Check: Automatic stop after 5 seconds
-          if (HAL_GetTick() - run_start_time >= RUN_DURATION_MS) {
-              current_state = STATE_STANDBY;
-              line_lock_count = 0;
-              line_locked = 0;
-              recovery_turn_dir = 0;
-              Motor_Stop();
-              Brushless_SetSpeed(0, 0);
-              continue;
-          }
+        switch (current_state) {
+            case STATE_STANDBY:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (HAL_GetTick() / 500) % 2);
+                if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_14) == GPIO_PIN_SET) {
+                    HAL_Delay(100);
+                    state_start_time = HAL_GetTick();
+                    current_state = STATE_PRE_START_DELAY;
+                }
+                break;
 
-          IR_ReadAll(ir_values);
-          int16_t position = IR_GetLinePosition();
-          
-          if (position == -9999) {
-              if (lost_line_start_time == 0) {
-                  lost_line_start_time = HAL_GetTick();
-              }
+            case STATE_PRE_START_DELAY:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+                if (HAL_GetTick() - state_start_time >= 2000) {
+                    Brushless_SetSpeed(FAN_SPD, FAN_SPD);
+                    state_start_time = HAL_GetTick();
+                    current_state = STATE_FAN_SPINUP;
+                }
+                break;
 
-              uint32_t lost_ms = HAL_GetTick() - lost_line_start_time;
-              if (!line_locked) {
-                  Motor_Left(STARTUP_ACQUIRE_SPEED);
-                  Motor_Right(STARTUP_ACQUIRE_SPEED);
-                  Brushless_SetSpeed(DOWNFORCE_SPEED, DOWNFORCE_SPEED);
+            case STATE_FAN_SPINUP:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (HAL_GetTick() / 100) % 2);
+                if (HAL_GetTick() - state_start_time >= 3000) {
+                    state_start_time = HAL_GetTick();
+                    current_state = STATE_RUNNING;
+                }
+                break;
 
-                  if (lost_ms >= STARTUP_ACQUIRE_MS) {
-                      current_state = STATE_STANDBY;
-                      line_lock_count = 0;
-                      line_locked = 0;
-                      recovery_turn_dir = 0;
-                      Motor_Stop();
-                      Brushless_SetSpeed(0, 0);
-                  }
-                  continue;
-              }
-              if (recovery_turn_dir == 0) {
-                  recovery_turn_dir = (last_line_position >= 0) ? 1 : -1;
-              }
-              if (recovery_turn_dir > 0) {
-                  if (lost_ms < RECOVERY_PIVOT_DELAY_MS) {
-                      Motor_Left(RECOVERY_ARC_SPEED);
-                      Motor_Right(0);
-                  } else {
-                      Motor_Left(RECOVERY_PIVOT_OUTER_SPEED);
-                      Motor_Right(RECOVERY_PIVOT_INNER_SPEED);
-                  }
-              } else {
-                  if (lost_ms < RECOVERY_PIVOT_DELAY_MS) {
-                      Motor_Left(0);
-                      Motor_Right(RECOVERY_ARC_SPEED);
-                  } else {
-                      Motor_Left(RECOVERY_PIVOT_INNER_SPEED);
-                      Motor_Right(RECOVERY_PIVOT_OUTER_SPEED);
-                  }
-              }
+            case STATE_RUNNING:
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
-              if (lost_ms >= RECOVERY_TIMEOUT) {
-                  current_state = STATE_STANDBY;
-                  Motor_Stop();
-                  Brushless_SetSpeed(0, 0);
-              }
-              continue;
-          }
-          
-          line_position = position;
-          int16_t pos_delta = line_position - last_line_position;
-          int16_t abs_delta = (pos_delta >= 0) ? pos_delta : -pos_delta;
-          lost_line_start_time = 0;
-          if (line_lock_count < 255) {
-              line_lock_count++;
-          }
-          if (line_lock_count >= LINE_LOCK_REQUIRED_SAMPLES) {
-              line_locked = 1;
-          }
+                if (HAL_GetTick() - state_start_time >= RUN_DURATION_MS) {
+                    Motor_Stop();
+                    Brushless_SetSpeed(0, 0);
+                    current_state = STATE_STANDBY;
+                    HAL_Delay(1000);
+                } else {
+                    if (pos == -9999) {
+                        // Corrected recovery: spin towards last seen side
+                        if (last_side == 1) { Motor_Left(-500); Motor_Right(850); }
+                        else if (last_side == -1) { Motor_Left(850); Motor_Right(-500); }
+                        else { Motor_Left(350); Motor_Right(350); }
+                    } else {
+                        // Updated for faster side detection (2000 threshold)
+                        if (pos > 2000) last_side = 1;      // LEFT
+                        else if (pos < -2000) last_side = -1; // RIGHT
 
-          // Track the latest turn direction so loss recovery turns the correct way.
-          if (line_position >= RECOVERY_TURN_HINT_THRESHOLD) {
-              recovery_turn_dir = 1;
-          } else if (line_position <= -RECOVERY_TURN_HINT_THRESHOLD) {
-              recovery_turn_dir = -1;
-          } else if (abs_delta >= CORNER_MID_RATE_THRESHOLD) {
-              recovery_turn_dir = (pos_delta >= 0) ? 1 : -1;
-          }
+                        // --- DYNAMIC SPEED SCALING ---
+                        int16_t current_base = BASE_SPD;
+                        if (abs(pos) > 3500) {
+                            current_base = BASE_SPD - 300;
+                            if (current_base < 350) current_base = 350;
+                        }
+                        pid.base_speed = current_base;
 
-          // Slow down in sharper corners to reduce overshoot.
-          int16_t abs_pos = (line_position >= 0) ? line_position : -line_position;
-
-          if (abs_pos >= CORNER_PIVOT_THRESHOLD) {
-              if (line_position > 0) {
-                  Motor_Left(CORNER_PIVOT_OUTER_SPEED);
-                  Motor_Right(CORNER_PIVOT_INNER_SPEED);
-              } else {
-                  Motor_Left(CORNER_PIVOT_INNER_SPEED);
-                  Motor_Right(CORNER_PIVOT_OUTER_SPEED);
-              }
-              Brushless_SetSpeed(DOWNFORCE_SPEED, DOWNFORCE_SPEED);
-              last_line_position = line_position;
-              continue;
-          }
-
-          if (abs_pos >= CORNER_HARD_THRESHOLD || abs_delta >= CORNER_HARD_RATE_THRESHOLD) {
-              line_pid.base_speed = CORNER_HARD_BASE_SPEED;
-          } else if (abs_pos >= CORNER_MID_THRESHOLD || abs_delta >= CORNER_MID_RATE_THRESHOLD) {
-              line_pid.base_speed = CORNER_MID_BASE_SPEED;
-          } else {
-              line_pid.base_speed = BASE_SPEED;
-          }
-
-          int16_t target_left, target_right;
-          PID_Compute(&line_pid, line_position, &target_left, &target_right);
-          last_line_position = line_position;
-          
-          Motor_Left(target_left);
-          Motor_Right(target_right);
-          Brushless_SetSpeed(DOWNFORCE_SPEED, DOWNFORCE_SPEED);
-          
-      } else {
-          // STANDBY
-          line_lock_count = 0;
-          line_locked = 0;
-          recovery_turn_dir = 0;
-          Motor_Stop();
-          Brushless_SetSpeed(0, 0);
-          if ((HAL_GetTick() / 1000) % 2) HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-          else HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-      }
-
+                        int16_t l, r;
+                        PID_Compute(&pid, pos, &l, &r);
+                        Motor_Left(l);
+                        Motor_Right(r);
+                    }
+                }
+                break;
+        }
+        HAL_Delay(5);
   }
   /* USER CODE END 3 */
 }
@@ -406,7 +271,11 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+/* --- SWO PRINTF REDIRECTION --- */
+int __io_putchar(int ch) {
+    ITM_SendChar(ch);
+    return ch;
+}
 /* USER CODE END 4 */
 
 /**
@@ -435,7 +304,7 @@ void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\\r\\n\", file, line) */
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
