@@ -60,6 +60,11 @@ typedef enum {
 #define MAP_FAN_SPD     0
 #define FAST_FAN_SPD    600
 
+// Smooth Mapping PID (Lazy tuning for clean data)
+#define MAP_KP          0.045f
+#define MAP_KI          0.00f
+#define MAP_KD          1.20f
+
 // Retuned for Extreme Speed: Higher KD to handle the momentum
 #define KP              0.115f
 #define KI              0.00f
@@ -264,6 +269,11 @@ int main(void)
             case STATE_RUNNING:
                 HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
+                // Restore aggressive PID for racing
+                pid.Kp = KP;
+                pid.Ki = KI;
+                pid.Kd = KD;
+
                 if (HAL_GetTick() - state_start_time >= RUN_DURATION_MS) {
                     Motor_Stop();
                     Brushless_SetSpeed(0, 0);
@@ -355,8 +365,12 @@ int main(void)
                 }
 
             mapping_active:
-                // PID for slow, stable mapping
+                // Smooth PID for stable mapping
+                pid.Kp = MAP_KP;
+                pid.Ki = MAP_KI;
+                pid.Kd = MAP_KD;
                 pid.base_speed = MAP_BASE_SPD;
+                
                 int16_t l_map, r_map;
                 PID_Compute(&pid, pos, &l_map, &r_map);
                 Motor_Left(l_map);
@@ -374,6 +388,11 @@ int main(void)
             case STATE_FAST_RUN:
                 HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // LED ON
                 
+                // Restore aggressive PID for racing
+                pid.Kp = KP;
+                pid.Ki = KI;
+                pid.Kd = KD;
+
                 if (HAL_GetTick() - state_start_time >= FAST_RUN_DURATION_MS) {
                     Motor_Stop();
                     Brushless_SetSpeed(0, 0);
